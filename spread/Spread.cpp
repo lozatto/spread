@@ -9,7 +9,7 @@ void CSpread::ServerActivate()
     // 0 Disabled
     // 1 Enabled
     //
-    // Default "1"
+    // Default "0"
     // sc_debug "0"
     static cvar_t tDebug = {"sc_debug", "0", FCVAR_SERVER, 0.0f, NULL};
 
@@ -49,8 +49,8 @@ void CSpread::ServerActivate()
     // >= 0.0 (Greater than or equal to zero activates the check)
     // <  0.0 (Less than zero disables checking)
     //
-    // Default "2.0"
-    // sc_max_punch_angle "2.0"
+    // Default "0.0"
+    // sc_max_punch_angle "0.0"
     static cvar_t tMaxPunchAngle = {"sc_max_punch_angle", "0.0", FCVAR_SERVER, 0.0f, NULL};
 
     // Spread value applied when all checks has passed
@@ -127,192 +127,150 @@ void CSpread::ServerActivate()
 
 float CSpread::GetSpread(CBaseEntity *pEntity, Vector &vecSrc, Vector &vecDirShooting, float vecSpread, float flDistance, int iPenetration, int iBulletType, int iDamage, float flRangeModifier, entvars_t *pevAttacker, bool bPistol, int shared_rand)
 {
-    // guard the entire function with a plugin-active check first,
-    // before touching pEntity at all.
     if (!this->m_Active || this->m_Active->value <= 0.0f)
     {
         return vecSpread;
     }
 
-    // pEntity null check BEFORE the static_cast.
-    // FireBullets3 can be called by non-player entities (func_tank, NPCs, etc.).
-    // The original code did static_cast<CBasePlayer*>(pEntity) with no validation,
-    // trusting that a non-null pointer is always a valid player — it is not.
-    if (!pEntity || !pEntity->pev)
+    CBasePlayer *Player = EntityToValidPlayer(pEntity);
+
+    if (!Player)
     {
         return vecSpread;
     }
-
-    // validate the edict is alive and not freed before dereferencing.
-    // edict()->free == 1 means the slot was recycled; pvPrivateData may be stale.
-    edict_t *pEdict = pEntity->edict();
-    if (!pEdict || pEdict->free)
-    {
-        return vecSpread;
-    }
-
-    // confirm the entity is actually a player before casting.
-    // Without this, any non-player entity that fires bullets (bots with custom
-    // code, func_tank, rezombie custom entities, etc.) causes the cast to
-    // reinterpret an arbitrary CBaseEntity layout as CBasePlayer, leading to
-    // out-of-bounds field reads -> SIGSEGV.
-    int entIdx = ENTINDEX(pEdict);
-    if (entIdx < 1 || entIdx > gpGlobals->maxClients)
-    {
-        // Not a player slot — pass through unchanged.
-        return vecSpread;
-    }
-
-    // Safe to cast now: slot is in the player range and edict is not free.
-    auto Player = static_cast<CBasePlayer *>(pEntity);
 
     bool DebugMode = (this->m_Debug && this->m_Debug->value > 0.0f);
 
-    // If player is not on ground, block spread fix
-    if (this->m_GroundCheck)
+    // --- Ground Check ---
+    if (this->m_GroundCheck && this->m_GroundCheck->value > 0.0f)
     {
-        if (this->m_GroundCheck->value > 0.0f)
+        if (DebugMode)
         {
+            this->ClientPrint(
+                Player->edict(),
+                E_PRINT::CHAT,
+                "[%s] Ground Check: %2.2f (OnGround: %s) (Pass: %s)",
+                Plugin_info.logtag,
+                this->m_GroundCheck->value,
+                (Player->pev->flags & FL_ONGROUND) ? "Yes" : "No",
+                (Player->pev->flags & FL_ONGROUND) ? "Yes" : "No"
+            );
+        }
+
+        if (!(Player->pev->flags & FL_ONGROUND))
+        {
+            return vecSpread;
+        }
+    }
+
+    // --- Max Speed Check ---
+    if (this->m_MaxSpeed && this->m_MaxSpeed->value > 0.0f)
+    {
+        if (Player->pev->maxspeed > 0.0f)
+        {
+            float speedLimit = Player->pev->maxspeed / this->m_MaxSpeed->value;
+
             if (DebugMode)
             {
-                this->ClientPrint
-                (
+                this->ClientPrint(
                     Player->edict(),
                     E_PRINT::CHAT,
-                    "[%s] Ground Check: %2.2f (OnGround: %s) (Pass: %s)",
+                    "[%s] Max Speed Divisor: %2.2f (Player Velocity: %2.2f) (MaxSpeed: %2.2f) (Pass: %s)",
                     Plugin_info.logtag,
-                    this->m_GroundCheck->value,
-                    (Player->pev->flags & FL_ONGROUND) ? "Yes" : "No",
-                    (Player->pev->flags & FL_ONGROUND) ? "Yes" : "No"
+                    this->m_MaxSpeed->value,
+                    Player->pev->velocity.Length2D(),
+                    Player->pev->maxspeed,
+                    (Player->pev->velocity.Length2D() <= speedLimit) ? "Yes" : "No"
                 );
             }
 
-            if (!(Player->pev->flags & FL_ONGROUND))
+            if (Player->pev->velocity.Length2D() > speedLimit)
             {
                 return vecSpread;
             }
         }
     }
 
-    // If player is moving: Block if player speed is greater than: (weapon-max-speed / max-speed-cvar-value)
-    if (this->m_MaxSpeed)
+    // --- Max Punch Angle Check ---
+    if (this->m_MaxPunchAngle && this->m_MaxPunchAngle->value >= 0.0f)
     {
-        if (this->m_MaxSpeed->value > 0.0f)
+        if (DebugMode)
         {
-            if (Player->pev->maxspeed > 0.0f)
-            {
-                if (DebugMode)
-                {
-                    this->ClientPrint
-                    (
-                        Player->edict(),
-                        E_PRINT::CHAT,
-                        "[%s] Max Speed Divisor: %2.2f (Player Velocity: %2.2f) (MaxSpeed: %2.2f) (Pass: %s)",
-                        Plugin_info.logtag,
-                        this->m_MaxSpeed->value,
-                        Player->pev->velocity.Length2D(),
-                        Player->pev->maxspeed,
-                        (Player->pev->velocity.Length2D() <= (Player->pev->maxspeed / this->m_MaxSpeed->value)) ? "Yes" : "No"
-                    );
-                }
+            this->ClientPrint(
+                Player->edict(),
+                E_PRINT::CHAT,
+                "[%s] Max Punch Angle: %2.2f (Player Punch Angle: %2.2f) (Pass: %s)",
+                Plugin_info.logtag,
+                this->m_MaxPunchAngle->value,
+                Player->pev->punchangle.Length2D(),
+                (Player->pev->punchangle.Length2D() <= this->m_MaxPunchAngle->value) ? "Yes" : "No"
+            );
+        }
 
-                if (Player->pev->velocity.Length2D() > (Player->pev->maxspeed / this->m_MaxSpeed->value))
-                {
-                    return vecSpread;
-                }
-            }
+        if (Player->pev->punchangle.Length2D() > this->m_MaxPunchAngle->value)
+        {
+            return vecSpread;
         }
     }
 
-    // If player has fired: Do not remove spread if player is shoting a lot
-    if (this->m_MaxPunchAngle)
+    // --- Blocked Weapons Check ---
+    if (this->m_Weapons && this->m_Weapons->string && this->m_Weapons->string[0u] != '\0')
     {
-        if (this->m_MaxPunchAngle->value >= 0.0f)
+        if (Player->m_pActiveItem)
         {
-            if (DebugMode)
-            {
-                this->ClientPrint
-                (
-                    Player->edict(),
-                    E_PRINT::CHAT,
-                    "[%s] Max Punch Angle: %2.2f (Player Punch Angle: %2.2f) (Pass: %s)",
-                    Plugin_info.logtag,
-                    this->m_MaxPunchAngle->value,
-                    Player->pev->punchangle.Length2D(),
-                    (Player->pev->punchangle.Length2D() <= this->m_MaxPunchAngle->value) ? "Yes" : "No"
-                );
-            }
-            
-            if (Player->pev->punchangle.Length2D() > this->m_MaxPunchAngle->value)
-            {
-                return vecSpread;
-            }
-        }
-    }
+            int weaponId = Player->m_pActiveItem->m_iId;
 
-    // Check Blocked Weapons
-    if (this->m_Weapons)
-    {
-        if (this->m_Weapons->string[0u] != '\0')
-        {
-            // m_pActiveItem null check added before dereferencing m_iId.
-            // In the original code, if m_pActiveItem is null (player just switched
-            // weapon, or weapon was force-removed by another plugin such as rezombie),
-            // m_pActiveItem->m_iId is a null-pointer dereference -> SIGSEGV.
-            if (Player->m_pActiveItem)
+            if (weaponId >= WEAPON_P228 && weaponId <= WEAPON_P90)
             {
-                if (Player->m_pActiveItem->m_iId >= WEAPON_P228 && Player->m_pActiveItem->m_iId <= WEAPON_P90)
+                size_t strLen = strlen(this->m_Weapons->string);
+
+                if ((size_t)weaponId < strLen)
                 {
-                    // bounds check on the string index BEFORE indexing.
-                    // The original code used m_iId (up to 30) as a direct char array
-                    // index with no length guard. If sc_weapons_block is set to a
-                    // string shorter than 30 chars (e.g. the user provides a partial
-                    // string), this reads beyond the string buffer -> UB / garbage value.
-                    int weaponId = Player->m_pActiveItem->m_iId;
-                    size_t blockStrLen = strlen(this->m_Weapons->string);
-
-                    if ((size_t)weaponId < blockStrLen)
+                    if (DebugMode)
                     {
-                        if (DebugMode)
-                        {
-                            this->ClientPrint
-                            (
-                                Player->edict(),
-                                E_PRINT::CHAT,
-                                "[%s] Weapon Position: %d (Is Blocked: %s)",
-                                Plugin_info.logtag,
-                                weaponId,
-                                (this->m_Weapons->string[weaponId] != '0') ? "Yes" : "No"
-                            );
-                        }
-                        
-                        if (this->m_Weapons->string[weaponId] != '0')
-                        {
-                            return vecSpread;
-                        }
+                        this->ClientPrint(
+                            Player->edict(),
+                            E_PRINT::CHAT,
+                            "[%s] Weapon Position: %d (Is Blocked: %s)",
+                            Plugin_info.logtag,
+                            weaponId,
+                            (this->m_Weapons->string[weaponId] != '0') ? "Yes" : "No"
+                        );
+                    }
+
+                    if (this->m_Weapons->string[weaponId] != '0')
+                    {
+                        return vecSpread;
                     }
                 }
             }
         }
     }
 
-    // Do not remove spread if player is not aiming his weapons like AWP, SCOUT or other
-    // m_pActiveItem null check before dereferencing m_iId (same pattern as above).
     if (!Player->m_bResumeZoom && Player->m_pActiveItem)
     {
-        if (Player->m_pActiveItem->m_iId == WEAPON_SCOUT || Player->m_pActiveItem->m_iId == WEAPON_SG550 || Player->m_pActiveItem->m_iId == WEAPON_AWP || Player->m_pActiveItem->m_iId == WEAPON_G3SG1)
+        int weaponId = Player->m_pActiveItem->m_iId;
+
+        if (weaponId == WEAPON_SCOUT ||
+            weaponId == WEAPON_SG550 ||
+            weaponId == WEAPON_AWP   ||
+            weaponId == WEAPON_G3SG1)
         {
             return vecSpread;
         }
     }
 
-    // Spread value to return
-    if (this->m_Spread)
+    // --- Apply custom spread ---
+    if (this->m_Spread && this->m_Spread->value >= 0.0f)
     {
-        if (this->m_Spread->value >= 0.0f)
+        float newSpread = this->m_Spread->value;
+
+        if (!std::isfinite(newSpread) || newSpread < 0.0f)
         {
-            return this->m_Spread->value;
+            return vecSpread; 
         }
+
+        return newSpread;
     }
 
     return vecSpread;
@@ -330,6 +288,11 @@ void CSpread::ClientPrint(edict_t *pEntity, int iMsgDest, const char *Format, ..
 
 	va_end(argList);
 
+    if (Length < 0)
+    {
+        return;
+    }
+
 	if (iMsgDest == E_PRINT::CONSOLE)
 	{
 		if (Length > 125)
@@ -337,16 +300,16 @@ void CSpread::ClientPrint(edict_t *pEntity, int iMsgDest, const char *Format, ..
 			Length = 125;
 		}
 
+        Buffer[Length++] = '\n';
 		Buffer[Length++] = '\n';
-		Buffer[Length++] = '\n';
-		Buffer[Length] = 0;
+		Buffer[Length]   = '\0';
 	}
 
 	static int iMsgTextMsg;
 
 	if (iMsgTextMsg || (iMsgTextMsg = gpMetaUtilFuncs->pfnGetUserMsgID(PLID, "TextMsg", NULL)))
 	{
-		if (!FNullEnt(pEntity))
+        if (!FNullEnt(pEntity))
 		{
 			g_engfuncs.pfnMessageBegin(MSG_ONE, iMsgTextMsg, nullptr, pEntity);
 		}

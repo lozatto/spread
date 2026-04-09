@@ -86,8 +86,21 @@ CGameRules *ReGameDLL_InstallGameRules(IReGameHook_InstallGameRules *chain)
 }
 
 Vector &ReGameDLL_CBaseEntity_FireBullets3(IReGameHook_CBaseEntity_FireBullets3 *chain, CBaseEntity *pEntity, Vector &vecSrc, Vector &vecDirShooting, float vecSpread, float flDistance, int iPenetration, int iBulletType, int iDamage, float flRangeModifier, entvars_t *pevAttacker, bool bPistol, int shared_rand)
-{
-	vecSpread = gSpread.GetSpread(pEntity, vecSrc, vecDirShooting, vecSpread, flDistance, iPenetration, iBulletType, iDamage, flRangeModifier, pevAttacker, bPistol, shared_rand);
+{   
+    if (pEntity && pEntity->pev)
+    {
+        vecSpread = gSpread.GetSpread(
+            pEntity, vecSrc, vecDirShooting,
+            vecSpread, flDistance, iPenetration,
+            iBulletType, iDamage, flRangeModifier,
+            pevAttacker, bPistol, shared_rand
+        );
+    }
 
-	return chain->callNext(pEntity, vecSrc, vecDirShooting, vecSpread, flDistance, iPenetration, iBulletType, iDamage, flRangeModifier, pevAttacker, bPistol, shared_rand);
+	return chain->callNext(
+        pEntity, vecSrc, vecDirShooting,
+        vecSpread, flDistance, iPenetration,
+        iBulletType, iDamage, flRangeModifier,
+        pevAttacker, bPistol, shared_rand
+    );
 }
